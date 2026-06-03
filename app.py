@@ -1,5 +1,4 @@
 import math
-from itertools import combinations
 
 import pandas as pd
 import streamlit as st
@@ -46,13 +45,21 @@ def find_default_column(cols, keywords):
 def load_file(uploaded_file):
     name = uploaded_file.name.lower()
     if name.endswith(".csv"):
-        # Try normal CSV first, then fallback encoding
         try:
             return pd.read_csv(uploaded_file)
         except UnicodeDecodeError:
             uploaded_file.seek(0)
             return pd.read_csv(uploaded_file, encoding="latin1")
     return pd.read_excel(uploaded_file)
+
+
+def meeting_status(duration_min, detection_count, min_duration_min, min_points_confirmed):
+    if duration_min >= min_duration_min and detection_count >= min_points_confirmed:
+        return "Confirmed"
+    if duration_min >= min_duration_min:
+        return "Possible"
+    return "Below Duration"
+
 
 # -----------------------------
 # Sidebar settings
@@ -62,12 +69,25 @@ st.sidebar.header("Setting Detection")
 distance_threshold = st.sidebar.number_input(
     "Jarak maksimum (meter)", min_value=10, max_value=1000, value=100, step=10
 )
-time_window_min = st.sidebar.number_input(
-    "Time window (minit)", min_value=1, max_value=60, value=10, step=1
+
+min_duration_min = st.sidebar.number_input(
+    "Minimum duration meeting (minit)", min_value=1, max_value=1440, value=10, step=1
 )
+
+# Ini bukan duration meeting.
+# Ini cuma tolerance sebab timestamp AIS antara kapal kadang-kadang tak sama tepat.
+ais_time_tolerance_min = st.sidebar.number_input(
+    "AIS time tolerance / beza masa rekod (minit)",
+    min_value=1,
+    max_value=120,
+    value=30,
+    step=1,
+)
+
 speed_threshold = st.sidebar.number_input(
     "Speed maksimum (knot)", min_value=0.0, max_value=20.0, value=1.0, step=0.1
 )
+
 min_points_confirmed = st.sidebar.number_input(
     "Minimum detection untuk Confirmed", min_value=1, max_value=10, value=2, step=1
 )
@@ -98,39 +118,44 @@ st.subheader("Pilih Column")
 col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
+    default_time = find_default_column(cols, ["local time", "utc time", "time", "date"])
     time_col = st.selectbox(
         "Column Masa",
         cols,
-        index=cols.index(find_default_column(cols, ["local time", "utc time", "time", "date"]))
-        if find_default_column(cols, ["local time", "utc time", "time", "date"]) in cols else 0,
+        index=cols.index(default_time) if default_time in cols else 0,
     )
+
 with col2:
+    default_vessel = find_default_column(cols, ["name", "vessel", "ship", "mmsi"])
     vessel_col = st.selectbox(
         "Column Kapal",
         cols,
-        index=cols.index(find_default_column(cols, ["name", "vessel", "ship", "mmsi"]))
-        if find_default_column(cols, ["name", "vessel", "ship", "mmsi"]) in cols else 0,
+        index=cols.index(default_vessel) if default_vessel in cols else 0,
     )
+
 with col3:
+    default_lat = find_default_column(cols, ["latitude", "lat"])
     lat_col = st.selectbox(
         "Column Latitude",
         cols,
-        index=cols.index(find_default_column(cols, ["latitude", "lat"]))
-        if find_default_column(cols, ["latitude", "lat"]) in cols else 0,
+        index=cols.index(default_lat) if default_lat in cols else 0,
     )
+
 with col4:
+    default_lon = find_default_column(cols, ["longitude", "lon", "lng"])
     lon_col = st.selectbox(
         "Column Longitude",
         cols,
-        index=cols.index(find_default_column(cols, ["longitude", "lon", "lng"]))
-        if find_default_column(cols, ["longitude", "lon", "lng"]) in cols else 0,
+        index=cols.index(default_lon) if default_lon in cols else 0,
     )
+
 with col5:
+    default_speed = find_default_column(cols, ["sog", "speed"])
+    speed_options = ["Tiada"] + cols
     speed_col = st.selectbox(
         "Column Speed/SOG",
-        ["Tiada"] + cols,
-        index=(["Tiada"] + cols).index(find_default_column(cols, ["sog", "speed"]))
-        if find_default_column(cols, ["sog", "speed"]) in cols else 0,
+        speed_options,
+        index=speed_options.index(default_speed) if default_speed in speed_options else 0,
     )
 
 work = df.copy()
@@ -169,40 +194,45 @@ if area_filter:
         max_lon = st.number_input("Max Longitude", value=max_lon_data, format="%.6f")
 
     work = work[
-        (work[lat_col] >= min_lat) &
-        (work[lat_col] <= max_lat) &
-        (work[lon_col] >= min_lon) &
-        (work[lon_col] <= max_lon)
+        (work[lat_col] >= min_lat)
+        & (work[lat_col] <= max_lat)
+        & (work[lon_col] >= min_lon)
+        & (work[lon_col] <= max_lon)
     ]
 
 st.write(f"Jumlah row selepas filter: **{len(work):,}**")
 
+# -----------------------------
+# Detection process
+# -----------------------------
 if st.button("Process Detection", type="primary"):
     if len(work) < 2:
         st.warning("Data kurang dari 2 row. Tak boleh compare vessel.")
         st.stop()
 
     work = work.sort_values(time_col).reset_index(drop=True)
-
-    detections = []
-    time_window = pd.Timedelta(minutes=time_window_min)
-
-    # Compare pair secara sliding window. Sesuai untuk CSV harian kecil/sederhana.
     records = work.to_dict("records")
 
+    detections = []
+    ais_tolerance = pd.Timedelta(minutes=ais_time_tolerance_min)
+
+    # Compare row by row.
+    # Kita masih guna AIS tolerance supaya tak compare lokasi kapal yang beza masa terlalu jauh.
     for i in range(len(records)):
         r1 = records[i]
         t1 = r1[time_col]
-        v1 = str(r1[vessel_col])
+        v1 = str(r1[vessel_col]).strip()
 
         for j in range(i + 1, len(records)):
             r2 = records[j]
             t2 = r2[time_col]
 
-            if t2 - t1 > time_window:
+            # Stop bila beza masa rekod AIS dah lebih tolerance.
+            # Contoh tolerance 30 minit: rekod kapal A 10:00 boleh compare dengan kapal B 10:25.
+            if t2 - t1 > ais_tolerance:
                 break
 
-            v2 = str(r2[vessel_col])
+            v2 = str(r2[vessel_col]).strip()
             if v1 == v2:
                 continue
 
@@ -219,26 +249,33 @@ if st.button("Process Detection", type="primary"):
                 s2 = None
 
             distance_m = haversine_m(
-                float(r1[lat_col]), float(r1[lon_col]),
-                float(r2[lat_col]), float(r2[lon_col])
+                float(r1[lat_col]),
+                float(r1[lon_col]),
+                float(r2[lat_col]),
+                float(r2[lon_col]),
             )
 
             if distance_m <= distance_threshold:
                 pair = tuple(sorted([v1, v2]))
-                detections.append({
-                    "Vessel A": pair[0],
-                    "Vessel B": pair[1],
-                    "Time A": t1,
-                    "Time B": t2,
-                    "Time Gap Min": round(abs((t2 - t1).total_seconds()) / 60, 2),
-                    "Distance Meter": round(distance_m, 2),
-                    "Lat A": r1[lat_col],
-                    "Lon A": r1[lon_col],
-                    "Lat B": r2[lat_col],
-                    "Lon B": r2[lon_col],
-                    "Speed A": round(float(s1), 2) if s1 is not None else None,
-                    "Speed B": round(float(s2), 2) if s2 is not None else None,
-                })
+                detection_time = min(t1, t2)
+
+                detections.append(
+                    {
+                        "Vessel A": pair[0],
+                        "Vessel B": pair[1],
+                        "Detection Time": detection_time,
+                        "Time A": t1,
+                        "Time B": t2,
+                        "Time Gap Min": round(abs((t2 - t1).total_seconds()) / 60, 2),
+                        "Distance Meter": round(distance_m, 2),
+                        "Lat A": r1[lat_col],
+                        "Lon A": r1[lon_col],
+                        "Lat B": r2[lat_col],
+                        "Lon B": r2[lon_col],
+                        "Speed A": round(float(s1), 2) if s1 is not None else None,
+                        "Speed B": round(float(s2), 2) if s2 is not None else None,
+                    }
+                )
 
     detail_df = pd.DataFrame(detections)
 
@@ -247,38 +284,66 @@ if st.button("Process Detection", type="primary"):
         st.stop()
 
     summary_rows = []
+
     for (va, vb), g in detail_df.groupby(["Vessel A", "Vessel B"]):
-        first_seen = min(g["Time A"].min(), g["Time B"].min())
-        last_seen = max(g["Time A"].max(), g["Time B"].max())
+        g = g.sort_values("Detection Time")
+
+        first_seen = g["Detection Time"].min()
+        last_seen = g["Detection Time"].max()
         duration_min = round((last_seen - first_seen).total_seconds() / 60, 2)
         detection_count = len(g)
         min_distance = round(g["Distance Meter"].min(), 2)
         avg_distance = round(g["Distance Meter"].mean(), 2)
+        max_time_gap = round(g["Time Gap Min"].max(), 2)
 
         if speed_col != "Tiada":
             avg_speed = round(pd.concat([g["Speed A"], g["Speed B"]]).dropna().mean(), 2)
+            max_speed = round(pd.concat([g["Speed A"], g["Speed B"]]).dropna().max(), 2)
         else:
             avg_speed = None
+            max_speed = None
 
-        status = "Confirmed" if detection_count >= min_points_confirmed else "Possible"
+        status = meeting_status(
+            duration_min,
+            detection_count,
+            min_duration_min,
+            min_points_confirmed,
+        )
 
-        summary_rows.append({
-            "Vessel A": va,
-            "Vessel B": vb,
-            "First Seen": first_seen,
-            "Last Seen": last_seen,
-            "Duration Min": duration_min,
-            "Detection Count": detection_count,
-            "Min Distance Meter": min_distance,
-            "Avg Distance Meter": avg_distance,
-            "Avg Speed Knot": avg_speed,
-            "Status": status,
-        })
+        summary_rows.append(
+            {
+                "Vessel A": va,
+                "Vessel B": vb,
+                "First Seen": first_seen,
+                "Last Seen": last_seen,
+                "Duration Min": duration_min,
+                "Detection Count": detection_count,
+                "Min Distance Meter": min_distance,
+                "Avg Distance Meter": avg_distance,
+                "Avg Speed Knot": avg_speed,
+                "Max Speed Knot": max_speed,
+                "Max AIS Time Gap Min": max_time_gap,
+                "Status": status,
+            }
+        )
 
-    summary_df = pd.DataFrame(summary_rows).sort_values(
-        ["Status", "Min Distance Meter", "Detection Count"],
-        ascending=[True, True, False]
-    )
+    summary_df = pd.DataFrame(summary_rows)
+
+    # Rule utama user: duration mesti 10 minit dan ke atas.
+    summary_df = summary_df[summary_df["Duration Min"] >= min_duration_min]
+
+    if summary_df.empty:
+        st.warning("Ada jarak dekat dikesan, tapi tiada yang cukup minimum duration meeting.")
+        st.subheader("Raw Detection Detail")
+        st.dataframe(detail_df, use_container_width=True)
+        st.stop()
+
+    status_order = {"Confirmed": 1, "Possible": 2, "Below Duration": 3}
+    summary_df["Status Order"] = summary_df["Status"].map(status_order).fillna(9)
+    summary_df = summary_df.sort_values(
+        ["Status Order", "Duration Min", "Min Distance Meter"],
+        ascending=[True, False, True],
+    ).drop(columns=["Status Order"])
 
     st.subheader("Summary Meeting")
     st.dataframe(summary_df, use_container_width=True)
