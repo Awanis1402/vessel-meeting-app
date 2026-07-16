@@ -3,10 +3,27 @@ import math
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Vessel Meeting Detector", layout="wide")
+st.set_page_config(page_title="Vessel Meeting Detection System", page_icon="⚓", layout="wide", initial_sidebar_state="expanded")
 
-st.title("Vessel Meeting Detector - Fasa 1")
-st.caption("Upload CSV/XLSX harian → filter kawasan → detect vessel bertemu ≤100m")
+st.markdown("""
+<style>
+    .main { background: #f7f9fc; }
+    [data-testid="stSidebar"] { background: #10243e; }
+    [data-testid="stSidebar"] * { color: #eef5ff !important; }
+    .hero { padding: 1.2rem 1.5rem; border-radius: 16px; background: linear-gradient(115deg,#10243e,#1b4d6b); color: white; margin-bottom: 1rem; }
+    .hero h1 { color: white; margin: 0 0 .25rem; font-size: 2.15rem; }
+    .hero p { color: #c9deef; margin: 0; }
+    div[data-testid="stMetric"] { background: white; border: 1px solid #e4eaf1; padding: 14px 16px; border-radius: 12px; box-shadow: 0 3px 12px rgba(16,36,62,.06); }
+    .section-title { color:#10243e; font-size:1.25rem; font-weight:700; margin:1rem 0 .5rem; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+<div class="hero">
+  <h1>⚓ Vessel Meeting Detection System</h1>
+  <p>Geospatial analysis for identifying vessel encounters within configurable distance, time and speed parameters.</p>
+</div>
+""", unsafe_allow_html=True)
 
 # -----------------------------
 # Helper functions
@@ -92,7 +109,7 @@ min_points_confirmed = st.sidebar.number_input(
     "Minimum detection untuk Confirmed", min_value=1, max_value=10, value=2, step=1
 )
 
-uploaded_file = st.file_uploader("Upload file CSV atau XLSX", type=["csv", "xlsx"])
+uploaded_file = st.file_uploader("Upload vessel data (CSV atau XLSX)", type=["csv", "xlsx"])
 
 if uploaded_file is None:
     st.info("Upload CSV/XLSX dulu untuk mula.")
@@ -109,12 +126,19 @@ if df.empty:
     st.warning("File kosong.")
     st.stop()
 
-st.subheader("Preview Data")
-st.dataframe(df.head(20), use_container_width=True)
+st.markdown('<div class="section-title">Dataset Overview</div>', unsafe_allow_html=True)
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Total records", f"{len(df):,}")
+m2.metric("Total columns", f"{len(df.columns):,}")
+m3.metric("File type", uploaded_file.name.split('.')[-1].upper())
+m4.metric("Detection range", f"{distance_threshold:,.0f} m")
+
+with st.expander("Preview uploaded data", expanded=False):
+    st.dataframe(df.head(20), use_container_width=True, height=320)
 
 cols = list(df.columns)
 
-st.subheader("Pilih Column")
+st.markdown('<div class="section-title">Map Data Columns</div>', unsafe_allow_html=True)
 col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
@@ -174,7 +198,7 @@ if work.empty:
     st.error("Data tak cukup selepas cleaning. Check column masa/kapal/lat/lon.")
     st.stop()
 
-st.subheader("Filter Kawasan")
+st.markdown('<div class="section-title">Area Filter</div>', unsafe_allow_html=True)
 min_lat_data = float(work[lat_col].min())
 max_lat_data = float(work[lat_col].max())
 min_lon_data = float(work[lon_col].min())
@@ -200,12 +224,12 @@ if area_filter:
         & (work[lon_col] <= max_lon)
     ]
 
-st.write(f"Jumlah row selepas filter: **{len(work):,}**")
+st.info(f"{len(work):,} records ready for detection", icon="📍")
 
 # -----------------------------
 # Detection process
 # -----------------------------
-if st.button("Process Detection", type="primary"):
+if st.button("Run vessel detection", type="primary", use_container_width=True):
     if len(work) < 2:
         st.warning("Data kurang dari 2 row. Tak boleh compare vessel.")
         st.stop()
@@ -345,7 +369,14 @@ if st.button("Process Detection", type="primary"):
         ascending=[True, False, True],
     ).drop(columns=["Status Order"])
 
-    st.subheader("Summary Meeting")
+    st.markdown('<div class="section-title">Detection Results</div>', unsafe_allow_html=True)
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("Confirmed meetings", int((summary_df["Status"] == "Confirmed").sum()))
+    r2.metric("Possible meetings", int((summary_df["Status"] == "Possible").sum()))
+    r3.metric("Vessel pairs", len(summary_df))
+    r4.metric("Closest distance", f"{summary_df['Min Distance Meter'].min():,.1f} m")
+
+    st.subheader("Meeting Summary")
     st.dataframe(summary_df, use_container_width=True)
 
     st.download_button(
