@@ -10,10 +10,14 @@ st.markdown("""
     .main { background: #f7f9fc; }
     [data-testid="stSidebar"] { background: #10243e; }
     [data-testid="stSidebar"] * { color: #eef5ff !important; }
+    [data-testid="stSidebar"] input { color: #10243e !important; }
+    [data-testid="stSidebar"] button { color: #10243e !important; }
     .hero { padding: 1.2rem 1.5rem; border-radius: 16px; background: linear-gradient(115deg,#10243e,#1b4d6b); color: white; margin-bottom: 1rem; }
     .hero h1 { color: white; margin: 0 0 .25rem; font-size: 2.15rem; }
     .hero p { color: #c9deef; margin: 0; }
     div[data-testid="stMetric"] { background: white; border: 1px solid #e4eaf1; padding: 14px 16px; border-radius: 12px; box-shadow: 0 3px 12px rgba(16,36,62,.06); }
+    div.stButton > button[kind="primary"] { background: #0f766e !important; border-color: #0f766e !important; color: white !important; border-radius: 10px; font-weight: 700; }
+    div.stButton > button[kind="primary"]:hover { background: #115e59 !important; border-color: #115e59 !important; }
     .section-title { color:#10243e; font-size:1.25rem; font-weight:700; margin:1rem 0 .5rem; }
 </style>
 """, unsafe_allow_html=True)
